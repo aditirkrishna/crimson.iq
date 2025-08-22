@@ -1,434 +1,461 @@
-# Time series forecasting models
+"""
+Phase 1.2: Baseline Time-Series Forecasting Models
+Implements ARIMA, Exponential Smoothing, and Random Forest models for blood demand prediction
+"""
 
-import numpy as np
 import pandas as pd
-from typing import Dict, List, Optional, Tuple, Any
+import numpy as np
+from typing import Dict, List, Tuple, Optional, Any, Union
 import logging
 from datetime import datetime, timedelta
-import pickle
-import json
-from pathlib import Path
-
-# ML libraries
+import warnings
 from sklearn.ensemble import RandomForestRegressor
-from sklearn.linear_model import LinearRegression
 from sklearn.metrics import mean_absolute_error, mean_squared_error, mean_absolute_percentage_error
 from sklearn.preprocessing import StandardScaler
-import statsmodels.api as sm
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
-from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.tsa.stattools import adfuller
+from statsmodels.graphics.tsaplots import plot_acf, plot_pacf
+import matplotlib.pyplot as plt
+import seaborn as sns
+import joblib
+import os
 
+# Configure logging and warnings
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+warnings.filterwarnings('ignore')
 
-class BaseTimeSeriesModel:
+class TimeSeriesForecaster:
     """Base class for time series forecasting models"""
     
-    def __init__(self, model_name: str, config: Optional[Dict] = None):
+    def __init__(self, model_name: str, config: Dict[str, Any] = None):
         self.model_name = model_name
         self.config = config or {}
         self.model = None
         self.is_fitted = False
-        self.feature_columns = []
         self.scaler = StandardScaler()
+        self.feature_columns = []
+        self.target_column = 'demand_quantity'
         
-    def fit(self, X: np.ndarray, y: np.ndarray, **kwargs):
+    def fit(self, data: pd.DataFrame) -> 'TimeSeriesForecaster':
         """Fit the model to the data"""
         raise NotImplementedError
         
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def predict(self, data: pd.DataFrame, steps: int = 24) -> np.ndarray:
         """Make predictions"""
         raise NotImplementedError
         
-    def evaluate(self, X: np.ndarray, y: np.ndarray) -> Dict[str, float]:
+    def evaluate(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
         """Evaluate model performance"""
-        predictions = self.predict(X)
-        
         metrics = {
-            'mae': mean_absolute_error(y, predictions),
-            'rmse': np.sqrt(mean_squared_error(y, predictions)),
-            'mape': mean_absolute_percentage_error(y, predictions) * 100,
-            'r2': self._calculate_r2(y, predictions)
+            'mae': mean_absolute_error(y_true, y_pred),
+            'rmse': np.sqrt(mean_squared_error(y_true, y_pred)),
+            'mape': mean_absolute_percentage_error(y_true, y_pred) * 100
         }
-        
         return metrics
-    
-    def _calculate_r2(self, y_true: np.ndarray, y_pred: np.ndarray) -> float:
-        """Calculate R-squared score"""
-        ss_res = np.sum((y_true - y_pred) ** 2)
-        ss_tot = np.sum((y_true - np.mean(y_true)) ** 2)
-        return 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
-    
+        
     def save_model(self, filepath: str):
         """Save the trained model"""
-        model_data = {
-            'model_name': self.model_name,
-            'config': self.config,
-            'is_fitted': self.is_fitted,
-            'feature_columns': self.feature_columns,
-            'model': self.model
-        }
-        
-        with open(filepath, 'wb') as f:
-            pickle.dump(model_data, f)
-        
-        logger.info(f"Model saved to {filepath}")
-    
+        if self.model is not None:
+            joblib.dump(self.model, filepath)
+            logger.info(f"Model saved to {filepath}")
+            
     def load_model(self, filepath: str):
         """Load a trained model"""
-        with open(filepath, 'rb') as f:
-            model_data = pickle.load(f)
-        
-        self.model_name = model_data['model_name']
-        self.config = model_data['config']
-        self.is_fitted = model_data['is_fitted']
-        self.feature_columns = model_data['feature_columns']
-        self.model = model_data['model']
-        
+        self.model = joblib.load(filepath)
+        self.is_fitted = True
         logger.info(f"Model loaded from {filepath}")
 
-class ARIMAModel(BaseTimeSeriesModel):
+class ARIMAForecaster(TimeSeriesForecaster):
     """ARIMA model for time series forecasting"""
     
-    def __init__(self, order: Tuple[int, int, int] = (1, 1, 1), 
-                 seasonal_order: Optional[Tuple[int, int, int, int]] = None):
-        super().__init__("ARIMA")
-        self.order = order
-        self.seasonal_order = seasonal_order
-        self.config = {
-            'order': order,
-            'seasonal_order': seasonal_order
-        }
-    
-    def fit(self, X: np.ndarray, y: np.ndarray, **kwargs):
-        """Fit ARIMA model to univariate time series"""
-        # For ARIMA, we need univariate data
-        if len(X.shape) > 1:
-            # Use the first feature or target as the time series
-            time_series = y.flatten() if len(y.shape) > 1 else y
-        else:
-            time_series = X
+    def __init__(self, config: Dict[str, Any] = None):
+        super().__init__("ARIMA", config)
+        self.order = config.get('order', (1, 1, 1))  # (p, d, q)
+        self.seasonal_order = config.get('seasonal_order', (1, 1, 1, 24))  # (P, D, Q, s)
         
-        # Check for stationarity
-        if not self._is_stationary(time_series):
-            logger.warning("Time series is not stationary. Consider differencing.")
+    def _check_stationarity(self, series: pd.Series) -> bool:
+        """Check if time series is stationary using Augmented Dickey-Fuller test"""
+        result = adfuller(series.dropna())
+        return result[1] <= 0.05  # p-value <= 0.05 indicates stationarity
+        
+    def _make_stationary(self, series: pd.Series) -> Tuple[pd.Series, int]:
+        """Make series stationary by differencing"""
+        original_series = series.copy()
+        d = 0
+        
+        while not self._check_stationarity(series) and d < 2:
+            series = series.diff().dropna()
+            d += 1
+            
+        return series, d
+        
+    def fit(self, data: pd.DataFrame) -> 'ARIMAForecaster':
+        """Fit ARIMA model"""
+        logger.info(f"Fitting ARIMA model with order {self.order}")
+        
+        # Prepare time series data
+        if isinstance(data, pd.DataFrame):
+            # Aggregate by timestamp if multiple columns
+            if len(data.columns) > 1:
+                series = data[self.target_column].groupby(data.index).sum()
+            else:
+                series = data.iloc[:, 0]
+        else:
+            series = data
+            
+        # Make series stationary
+        stationary_series, d = self._make_stationary(series)
+        
+        # Update order if differencing was needed
+        if d > 0:
+            p, _, q = self.order
+            self.order = (p, d, q)
+            logger.info(f"Updated ARIMA order to {self.order} after differencing")
         
         # Fit ARIMA model
-        if self.seasonal_order:
-            self.model = sm.tsa.statespace.SARIMAX(
-                time_series, 
-                order=self.order, 
-                seasonal_order=self.seasonal_order
-            )
-        else:
-            self.model = ARIMA(time_series, order=self.order)
+        try:
+            self.model = ARIMA(series, order=self.order)
+            self.fitted_model = self.model.fit()
+            self.is_fitted = True
+            logger.info("ARIMA model fitted successfully")
+        except Exception as e:
+            logger.error(f"Error fitting ARIMA model: {e}")
+            # Try with simpler order
+            self.order = (1, 1, 0)
+            self.model = ARIMA(series, order=self.order)
+            self.fitted_model = self.model.fit()
+            self.is_fitted = True
+            logger.info("ARIMA model fitted with simplified order")
+            
+        return self
         
-        self.model = self.model.fit()
-        self.is_fitted = True
-        
-        logger.info(f"ARIMA model fitted with order {self.order}")
-    
-    def predict(self, X: np.ndarray, steps: int = 1) -> np.ndarray:
+    def predict(self, data: pd.DataFrame = None, steps: int = 24) -> np.ndarray:
         """Make predictions"""
         if not self.is_fitted:
             raise ValueError("Model must be fitted before making predictions")
-        
-        # Get forecast
-        forecast = self.model.forecast(steps=steps)
-        
-        # Reshape to match expected output format
-        if len(X.shape) > 1:
-            # Return predictions for each sample
-            return np.tile(forecast, (X.shape[0], 1))
-        else:
-            return forecast
-    
-    def _is_stationary(self, time_series: np.ndarray) -> bool:
-        """Check if time series is stationary using Augmented Dickey-Fuller test"""
-        result = adfuller(time_series)
-        return result[1] < 0.05  # p-value < 0.05 indicates stationarity
+            
+        try:
+            forecast = self.fitted_model.forecast(steps=steps)
+            return forecast.values
+        except Exception as e:
+            logger.error(f"Error making ARIMA predictions: {e}")
+            return np.zeros(steps)
 
-class ExponentialSmoothingModel(BaseTimeSeriesModel):
+class ExponentialSmoothingForecaster(TimeSeriesForecaster):
     """Exponential Smoothing model for time series forecasting"""
     
-    def __init__(self, trend: Optional[str] = 'add', 
-                 seasonal: Optional[str] = 'add',
-                 seasonal_periods: Optional[int] = None):
-        super().__init__("ExponentialSmoothing")
-        self.trend = trend
-        self.seasonal = seasonal
-        self.seasonal_periods = seasonal_periods
-        self.config = {
-            'trend': trend,
-            'seasonal': seasonal,
-            'seasonal_periods': seasonal_periods
-        }
-    
-    def fit(self, X: np.ndarray, y: np.ndarray, **kwargs):
+    def __init__(self, config: Dict[str, Any] = None):
+        super().__init__("ExponentialSmoothing", config)
+        self.trend = config.get('trend', 'add')
+        self.seasonal = config.get('seasonal', 'add')
+        self.seasonal_periods = config.get('seasonal_periods', 24)  # 24 hours
+        self.damped_trend = config.get('damped_trend', False)
+        
+    def fit(self, data: pd.DataFrame) -> 'ExponentialSmoothingForecaster':
         """Fit Exponential Smoothing model"""
-        # For Exponential Smoothing, we need univariate data
-        if len(X.shape) > 1:
-            time_series = y.flatten() if len(y.shape) > 1 else y
+        logger.info(f"Fitting Exponential Smoothing model")
+        
+        # Prepare time series data
+        if isinstance(data, pd.DataFrame):
+            if len(data.columns) > 1:
+                series = data[self.target_column].groupby(data.index).sum()
+            else:
+                series = data.iloc[:, 0]
         else:
-            time_series = X
-        
-        # Create model
-        self.model = ExponentialSmoothing(
-            time_series,
-            trend=self.trend,
-            seasonal=self.seasonal,
-            seasonal_periods=self.seasonal_periods
-        )
-        
+            series = data
+            
         # Fit model
-        self.model = self.model.fit()
-        self.is_fitted = True
+        try:
+            self.model = ExponentialSmoothing(
+                series,
+                trend=self.trend,
+                seasonal=self.seasonal,
+                seasonal_periods=self.seasonal_periods,
+                damped_trend=self.damped_trend
+            )
+            self.fitted_model = self.model.fit()
+            self.is_fitted = True
+            logger.info("Exponential Smoothing model fitted successfully")
+        except Exception as e:
+            logger.error(f"Error fitting Exponential Smoothing model: {e}")
+            # Try with simpler configuration
+            self.model = ExponentialSmoothing(series, trend='add')
+            self.fitted_model = self.model.fit()
+            self.is_fitted = True
+            logger.info("Exponential Smoothing model fitted with simplified config")
+            
+        return self
         
-        logger.info(f"Exponential Smoothing model fitted")
-    
-    def predict(self, X: np.ndarray, steps: int = 1) -> np.ndarray:
+    def predict(self, data: pd.DataFrame = None, steps: int = 24) -> np.ndarray:
         """Make predictions"""
         if not self.is_fitted:
             raise ValueError("Model must be fitted before making predictions")
-        
-        # Get forecast
-        forecast = self.model.forecast(steps=steps)
-        
-        # Reshape to match expected output format
-        if len(X.shape) > 1:
-            return np.tile(forecast, (X.shape[0], 1))
-        else:
-            return forecast
+            
+        try:
+            forecast = self.fitted_model.forecast(steps=steps)
+            return forecast.values
+        except Exception as e:
+            logger.error(f"Error making Exponential Smoothing predictions: {e}")
+            return np.zeros(steps)
 
-class RandomForestTimeSeriesModel(BaseTimeSeriesModel):
-    """Random Forest model for time series forecasting with engineered features"""
+class RandomForestForecaster(TimeSeriesForecaster):
+    """Random Forest model for time series forecasting with feature engineering"""
     
-    def __init__(self, n_estimators: int = 100, max_depth: Optional[int] = None,
-                 random_state: int = 42):
-        super().__init__("RandomForest")
-        self.n_estimators = n_estimators
-        self.max_depth = max_depth
-        self.random_state = random_state
-        self.config = {
-            'n_estimators': n_estimators,
-            'max_depth': max_depth,
-            'random_state': random_state
-        }
-    
-    def fit(self, X: np.ndarray, y: np.ndarray, **kwargs):
+    def __init__(self, config: Dict[str, Any] = None):
+        super().__init__("RandomForest", config)
+        self.n_estimators = config.get('n_estimators', 100)
+        self.max_depth = config.get('max_depth', 10)
+        self.random_state = config.get('random_state', 42)
+        self.lag_features = config.get('lag_features', [1, 2, 3, 6, 12, 24])
+        
+    def _create_lag_features(self, data: pd.DataFrame, target_col: str) -> pd.DataFrame:
+        """Create lag features for time series"""
+        df = data.copy()
+        
+        for lag in self.lag_features:
+            df[f'{target_col}_lag_{lag}'] = df[target_col].shift(lag)
+            
+        # Create rolling statistics
+        for window in [3, 6, 12, 24]:
+            df[f'{target_col}_rolling_mean_{window}'] = df[target_col].rolling(window=window).mean()
+            df[f'{target_col}_rolling_std_{window}'] = df[target_col].rolling(window=window).std()
+            
+        return df
+        
+    def _create_time_features(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Create time-based features"""
+        df = data.copy()
+        
+        if isinstance(df.index, pd.DatetimeIndex):
+            df['hour'] = df.index.hour
+            df['day_of_week'] = df.index.dayofweek
+            df['day_of_month'] = df.index.day
+            df['month'] = df.index.month
+            df['is_weekend'] = df['day_of_week'].isin([5, 6]).astype(int)
+            df['is_business_hours'] = ((df['hour'] >= 8) & (df['hour'] <= 18)).astype(int)
+            
+        return df
+        
+    def fit(self, data: pd.DataFrame) -> 'RandomForestForecaster':
         """Fit Random Forest model"""
-        # Reshape data for Random Forest
-        if len(X.shape) == 3:
-            # Convert 3D (samples, timesteps, features) to 2D (samples, timesteps*features)
-            X_reshaped = X.reshape(X.shape[0], -1)
+        logger.info(f"Fitting Random Forest model with {self.n_estimators} estimators")
+        
+        # Prepare features
+        df = data.copy()
+        if self.target_column in df.columns:
+            df = self._create_lag_features(df, self.target_column)
+            df = self._create_time_features(df)
+            
+            # Drop rows with NaN values (from lag features)
+            df = df.dropna()
+            
+            # Prepare features and target
+            feature_cols = [col for col in df.columns if col != self.target_column and not col.startswith('timestamp')]
+            self.feature_columns = feature_cols
+            
+            X = df[feature_cols]
+            y = df[self.target_column]
+            
+            # Scale features
+            X_scaled = self.scaler.fit_transform(X)
+            
+            # Fit model
+            self.model = RandomForestRegressor(
+                n_estimators=self.n_estimators,
+                max_depth=self.max_depth,
+                random_state=self.random_state,
+                n_jobs=-1
+            )
+            self.model.fit(X_scaled, y)
+            self.is_fitted = True
+            logger.info("Random Forest model fitted successfully")
         else:
-            X_reshaped = X
+            logger.error(f"Target column '{self.target_column}' not found in data")
+            
+        return self
         
-        # Flatten target if needed
-        if len(y.shape) > 1:
-            y_reshaped = y.flatten()
-        else:
-            y_reshaped = y
-        
-        # Scale features
-        X_scaled = self.scaler.fit_transform(X_reshaped)
-        
-        # Create and fit model
-        self.model = RandomForestRegressor(
-            n_estimators=self.n_estimators,
-            max_depth=self.max_depth,
-            random_state=self.random_state,
-            n_jobs=-1
-        )
-        
-        self.model.fit(X_scaled, y_reshaped)
-        self.is_fitted = True
-        
-        logger.info(f"Random Forest model fitted with {self.n_estimators} estimators")
-    
-    def predict(self, X: np.ndarray) -> np.ndarray:
+    def predict(self, data: pd.DataFrame, steps: int = 24) -> np.ndarray:
         """Make predictions"""
         if not self.is_fitted:
             raise ValueError("Model must be fitted before making predictions")
+            
+        predictions = []
+        df = data.copy()
         
-        # Reshape data
-        if len(X.shape) == 3:
-            X_reshaped = X.reshape(X.shape[0], -1)
-        else:
-            X_reshaped = X
-        
-        # Scale features
-        X_scaled = self.scaler.transform(X_reshaped)
-        
-        # Make predictions
-        predictions = self.model.predict(X_scaled)
-        
-        # Reshape back if needed
-        if len(X.shape) == 3 and X.shape[0] > 1:
-            # For multiple samples, reshape to match original target shape
-            return predictions.reshape(-1, 1)
-        else:
-            return predictions
+        for i in range(steps):
+            # Prepare features for current step
+            df = self._create_lag_features(df, self.target_column)
+            df = self._create_time_features(df)
+            
+            # Get latest row
+            latest_row = df.iloc[-1:][self.feature_columns]
+            
+            # Scale features
+            latest_scaled = self.scaler.transform(latest_row)
+            
+            # Make prediction
+            pred = self.model.predict(latest_scaled)[0]
+            predictions.append(pred)
+            
+            # Add prediction to dataframe for next iteration
+            new_row = df.iloc[-1:].copy()
+            new_row[self.target_column] = pred
+            df = pd.concat([df, new_row], ignore_index=True)
+            
+        return np.array(predictions)
 
-class LinearRegressionTimeSeriesModel(BaseTimeSeriesModel):
-    """Linear Regression model for time series forecasting"""
+class ModelEvaluator:
+    """Evaluates and compares different forecasting models"""
     
     def __init__(self):
-        super().__init__("LinearRegression")
-    
-    def fit(self, X: np.ndarray, y: np.ndarray, **kwargs):
-        """Fit Linear Regression model"""
-        # Reshape data
-        if len(X.shape) == 3:
-            X_reshaped = X.reshape(X.shape[0], -1)
-        else:
-            X_reshaped = X
+        self.models = {}
+        self.results = {}
         
-        if len(y.shape) > 1:
-            y_reshaped = y.flatten()
-        else:
-            y_reshaped = y
+    def add_model(self, name: str, model: TimeSeriesForecaster):
+        """Add a model to the evaluator"""
+        self.models[name] = model
         
-        # Scale features
-        X_scaled = self.scaler.fit_transform(X_reshaped)
+    def evaluate_models(self, train_data: pd.DataFrame, test_data: pd.DataFrame) -> Dict[str, Dict[str, float]]:
+        """Evaluate all models on train/test data"""
+        results = {}
         
-        # Create and fit model
-        self.model = LinearRegression()
-        self.model.fit(X_scaled, y_reshaped)
-        self.is_fitted = True
+        for name, model in self.models.items():
+            logger.info(f"Evaluating {name} model...")
+            
+            try:
+                # Fit model on training data
+                model.fit(train_data)
+                
+                # Make predictions on test data
+                y_true = test_data[model.target_column].values
+                y_pred = model.predict(test_data, steps=len(test_data))
+                
+                # Ensure predictions match test data length
+                if len(y_pred) > len(y_true):
+                    y_pred = y_pred[:len(y_true)]
+                elif len(y_pred) < len(y_true):
+                    y_pred = np.pad(y_pred, (0, len(y_true) - len(y_pred)), mode='edge')
+                
+                # Calculate metrics
+                metrics = model.evaluate(y_true, y_pred)
+                results[name] = metrics
+                
+                logger.info(f"{name} - MAE: {metrics['mae']:.2f}, RMSE: {metrics['rmse']:.2f}, MAPE: {metrics['mape']:.2f}%")
+                
+            except Exception as e:
+                logger.error(f"Error evaluating {name} model: {e}")
+                results[name] = {'mae': float('inf'), 'rmse': float('inf'), 'mape': float('inf')}
+                
+        self.results = results
+        return results
         
-        logger.info("Linear Regression model fitted")
-    
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Make predictions"""
-        if not self.is_fitted:
-            raise ValueError("Model must be fitted before making predictions")
+    def plot_predictions(self, test_data: pd.DataFrame, save_path: str = None):
+        """Plot predictions for all models"""
+        fig, axes = plt.subplots(len(self.models), 1, figsize=(15, 5*len(self.models)))
+        if len(self.models) == 1:
+            axes = [axes]
+            
+        for i, (name, model) in enumerate(self.models.items()):
+            if name in self.results:
+                y_true = test_data[model.target_column].values
+                y_pred = model.predict(test_data, steps=len(test_data))
+                
+                # Ensure predictions match test data length
+                if len(y_pred) > len(y_true):
+                    y_pred = y_pred[:len(y_true)]
+                elif len(y_pred) < len(y_true):
+                    y_pred = np.pad(y_pred, (0, len(y_true) - len(y_pred)), mode='edge')
+                
+                axes[i].plot(y_true, label='Actual', alpha=0.7)
+                axes[i].plot(y_pred, label='Predicted', alpha=0.7)
+                axes[i].set_title(f'{name} Model Predictions')
+                axes[i].set_xlabel('Time')
+                axes[i].set_ylabel('Demand')
+                axes[i].legend()
+                axes[i].grid(True, alpha=0.3)
+                
+        plt.tight_layout()
         
-        # Reshape data
-        if len(X.shape) == 3:
-            X_reshaped = X.reshape(X.shape[0], -1)
-        else:
-            X_reshaped = X
+        if save_path:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+            logger.info(f"Predictions plot saved to {save_path}")
         
-        # Scale features
-        X_scaled = self.scaler.transform(X_reshaped)
+        plt.show()
         
-        # Make predictions
-        predictions = self.model.predict(X_scaled)
-        
-        # Reshape back if needed
-        if len(X.shape) == 3 and X.shape[0] > 1:
-            return predictions.reshape(-1, 1)
-        else:
-            return predictions
-
-class TimeSeriesModelEnsemble:
-    """Ensemble of multiple time series models"""
-    
-    def __init__(self, models: List[BaseTimeSeriesModel], weights: Optional[List[float]] = None):
-        self.models = models
-        self.weights = weights or [1.0 / len(models)] * len(models)
-        
-        if len(self.weights) != len(models):
-            raise ValueError("Number of weights must match number of models")
-    
-    def fit(self, X: np.ndarray, y: np.ndarray, **kwargs):
-        """Fit all models in the ensemble"""
-        for model in self.models:
-            model.fit(X, y, **kwargs)
-        
-        logger.info(f"Ensemble fitted with {len(self.models)} models")
-    
-    def predict(self, X: np.ndarray) -> np.ndarray:
-        """Make ensemble predictions"""
-        predictions = []
-        
-        for model in self.models:
-            pred = model.predict(X)
-            predictions.append(pred)
-        
-        # Weighted average of predictions
-        ensemble_pred = np.zeros_like(predictions[0])
-        for pred, weight in zip(predictions, self.weights):
-            ensemble_pred += weight * pred
-        
-        return ensemble_pred
-    
-    def evaluate(self, X: np.ndarray, y: np.ndarray) -> Dict[str, float]:
-        """Evaluate ensemble performance"""
-        predictions = self.predict(X)
-        
-        metrics = {
-            'mae': mean_absolute_error(y, predictions),
-            'rmse': np.sqrt(mean_squared_error(y, predictions)),
-            'mape': mean_absolute_percentage_error(y, predictions) * 100
-        }
-        
-        return metrics
-
-def create_model_factory():
-    """Factory function to create different types of time series models"""
-    
-    def create_model(model_type: str, **kwargs) -> BaseTimeSeriesModel:
-        if model_type.lower() == 'arima':
-            return ARIMAModel(**kwargs)
-        elif model_type.lower() == 'exponential_smoothing':
-            return ExponentialSmoothingModel(**kwargs)
-        elif model_type.lower() == 'random_forest':
-            return RandomForestTimeSeriesModel(**kwargs)
-        elif model_type.lower() == 'linear_regression':
-            return LinearRegressionTimeSeriesModel(**kwargs)
-        else:
-            raise ValueError(f"Unknown model type: {model_type}")
-    
-    return create_model
+    def get_best_model(self) -> Tuple[str, TimeSeriesForecaster]:
+        """Get the best performing model based on RMSE"""
+        if not self.results:
+            raise ValueError("No evaluation results available. Run evaluate_models first.")
+            
+        best_model_name = min(self.results.keys(), key=lambda x: self.results[x]['rmse'])
+        return best_model_name, self.models[best_model_name]
 
 def main():
-    """Example usage of time series models"""
-    # Create sample data
-    np.random.seed(42)
-    n_samples = 1000
-    n_features = 10
-    n_timesteps = 24
+    """Main function for model training and evaluation"""
     
-    # Generate synthetic time series data
-    X = np.random.randn(n_samples, n_timesteps, n_features)
-    y = np.random.poisson(15, (n_samples, 7))  # 7-day forecast
+    # Load processed data
+    try:
+        demand_data = pd.read_parquet("processed_data/demand_processed.parquet")
+        logger.info("Loaded processed demand data")
+    except FileNotFoundError:
+        logger.error("Processed data not found. Please run the data preprocessing pipeline first.")
+        return
     
-    # Split data
-    train_size = int(0.7 * n_samples)
-    X_train, X_test = X[:train_size], X[train_size:]
-    y_train, y_test = y[:train_size], y[train_size:]
+    # Prepare data for modeling
+    # Aggregate demand by timestamp and blood group
+    demand_agg = demand_data.groupby(['timestamp', 'blood_group'])['demand_quantity'].sum().reset_index()
     
-    # Create models
+    # Focus on one blood group for demonstration (O+ is most common)
+    o_positive_data = demand_agg[demand_agg['blood_group'] == 'O+'].set_index('timestamp')['demand_quantity']
+    
+    # Split data into train/test
+    split_idx = int(len(o_positive_data) * 0.8)
+    train_data = o_positive_data[:split_idx]
+    test_data = o_positive_data[split_idx:]
+    
+    logger.info(f"Training data: {len(train_data)} samples")
+    logger.info(f"Test data: {len(test_data)} samples")
+    
+    # Initialize models
     models = {
-        'random_forest': RandomForestTimeSeriesModel(n_estimators=50),
-        'linear_regression': LinearRegressionTimeSeriesModel()
+        'ARIMA': ARIMAForecaster({'order': (1, 1, 1)}),
+        'ExponentialSmoothing': ExponentialSmoothingForecaster({
+            'trend': 'add', 'seasonal': 'add', 'seasonal_periods': 24
+        }),
+        'RandomForest': RandomForestForecaster({
+            'n_estimators': 100, 'max_depth': 10, 'lag_features': [1, 2, 3, 6, 12, 24]
+        })
     }
     
-    # Train and evaluate models
-    results = {}
+    # Initialize evaluator
+    evaluator = ModelEvaluator()
     for name, model in models.items():
-        print(f"\nTraining {name}...")
-        model.fit(X_train, y_train)
-        
-        # Evaluate
-        metrics = model.evaluate(X_test, y_test)
-        results[name] = metrics
-        
-        print(f"{name} Results:")
-        for metric, value in metrics.items():
-            print(f"  {metric.upper()}: {value:.4f}")
+        evaluator.add_model(name, model)
     
-    # Create ensemble
-    ensemble = TimeSeriesModelEnsemble(list(models.values()))
-    ensemble.fit(X_train, y_train)
-    ensemble_metrics = ensemble.evaluate(X_test, y_test)
+    # Evaluate models
+    results = evaluator.evaluate_models(train_data, test_data)
     
-    print(f"\nEnsemble Results:")
-    for metric, value in ensemble_metrics.items():
-        print(f"  {metric.upper()}: {value:.4f}")
+    # Plot predictions
+    evaluator.plot_predictions(test_data, save_path="forecast_predictions.png")
+    
+    # Get best model
+    best_model_name, best_model = evaluator.get_best_model()
+    logger.info(f"Best model: {best_model_name}")
+    
+    # Save best model
+    best_model.save_model(f"models/{best_model_name.lower()}_model.pkl")
+    
+    # Print summary
+    print("\n" + "="*50)
+    print("MODEL EVALUATION SUMMARY")
+    print("="*50)
+    for name, metrics in results.items():
+        print(f"{name:20} | MAE: {metrics['mae']:6.2f} | RMSE: {metrics['rmse']:6.2f} | MAPE: {metrics['mape']:6.2f}%")
+    print("="*50)
 
 if __name__ == "__main__":
+    # Create models directory
+    os.makedirs("models", exist_ok=True)
     main()
