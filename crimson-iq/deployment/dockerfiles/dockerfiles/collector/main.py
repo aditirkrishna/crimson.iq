@@ -1,4 +1,4 @@
-import os, json, signal, sys, threading
+import os, json, signal, sys
 from datetime import datetime, timezone
 import paho.mqtt.client as mqtt
 from pymongo import MongoClient, ASCENDING, DESCENDING
@@ -13,21 +13,22 @@ MONGO_URI = os.getenv("MONGO_URI", "mongodb://mongodb:27017")
 MONGO_DB = os.getenv("MONGO_DB", "crimson")
 MONGO_COLLECTION = os.getenv("MONGO_COLLECTION", "events")
 
-DUMP_PATH = os.getenv("DUMP_NDJSON_PATH", "/data/events.ndjson")
-RUN_DURATION = int(os.getenv("RUNTIME_SECS", "180"))  # default: 3 minutes
+DUMP_RAW_PATH = os.getenv("DUMP_RAW_PATH", "/data/events_raw.ndjson")
+DUMP_ML_PATH  = os.getenv("DUMP_ML_PATH", "/data/events_ml.ndjson")
 
 # --- Mongo ---
 mongo_client = MongoClient(MONGO_URI)
 db = mongo_client[MONGO_DB]
 col = db[MONGO_COLLECTION]
 
-# Helpful indexes for query speed
+# Indexes for faster querying
 col.create_index([("ts", DESCENDING)])
 col.create_index([("topic", ASCENDING)])
 col.create_index([("source", ASCENDING), ("entity_id", ASCENDING)])
 
-# --- File dump (newline-delimited JSON) ---
-dump_file = open(DUMP_PATH, "a", buffering=1)
+# --- File dumps ---
+raw_file = open(DUMP_RAW_PATH, "a", buffering=1)
+ml_file  = open(DUMP_ML_PATH, "a", buffering=1)
 
 is_shutting_down = False
 
@@ -36,28 +37,21 @@ def close_and_exit(*_):
     is_shutting_down = True
     print("Collector shutting down...", flush=True)
     try:
-        dump_file.flush()
-        dump_file.close()
-    except Exception:
-        pass
+        raw_file.flush(); raw_file.close()
+        ml_file.flush(); ml_file.close()
+    except Exception: pass
     try:
         mqtt_client.loop_stop()
-    except Exception:
-        pass
+    except Exception: pass
     try:
         mongo_client.close()
-    except Exception:
-        pass
+    except Exception: pass
     sys.exit(0)
 
 signal.signal(signal.SIGINT, close_and_exit)
 signal.signal(signal.SIGTERM, close_and_exit)
 
-# Auto-shutdown after RUN_DURATION seconds
-def shutdown_timer():
-    print(f"Collector will run for {RUN_DURATION} seconds then exit.", flush=True)
-    threading.Timer(RUN_DURATION, close_and_exit).start()
-
+# --- Helpers ---
 def parse_topic(topic: str):
     parts = topic.split("/")
     source = parts[0] if len(parts) > 0 else None
@@ -65,6 +59,7 @@ def parse_topic(topic: str):
     event_type = parts[2] if len(parts) > 2 else None
     return source, entity_id, event_type
 
+# --- MQTT Callbacks ---
 def on_connect(client, userdata, flags, rc):
     print("MQTT connected with rc:", rc, flush=True)
     client.subscribe(MQTT_TOPICS)
@@ -73,7 +68,7 @@ def on_connect(client, userdata, flags, rc):
 def on_message(client, userdata, msg):
     global is_shutting_down
     if is_shutting_down:
-        return  # ignore late packets during shutdown
+        return  # ignore late arrivals during shutdown
 
     try:
         payload = json.loads(msg.payload.decode("utf-8"))
@@ -82,7 +77,7 @@ def on_message(client, userdata, msg):
 
     source, entity_id, event_type = parse_topic(msg.topic)
     doc = {
-        "ts": datetime.now(timezone.utc),  # Mongo stores as Date
+        "ts": datetime.now(timezone.utc),  # Mongo stores this as Date
         "topic": msg.topic,
         "source": source,
         "entity_id": entity_id,
@@ -96,14 +91,28 @@ def on_message(client, userdata, msg):
     except PyMongoError as e:
         print("Mongo insert failed:", e, flush=True)
 
-    # 2) Append to single NDJSON file (ISO timestamp for portability)
-    dump_doc = dict(doc)
-    dump_doc["ts"] = doc["ts"].isoformat()
-    dump_doc.pop("_id", None)  # remove Mongo's ObjectId
+    # 2) Raw NDJSON dump (preserve structure, no ObjectId)
+    raw_doc = dict(doc)
+    raw_doc["ts"] = doc["ts"].isoformat()
+    raw_doc.pop("_id", None)
     try:
-        dump_file.write(json.dumps(dump_doc) + "\n")
+        raw_file.write(json.dumps(raw_doc) + "\n")
     except Exception as e:
-        print("File write failed:", e, flush=True)
+        print("Raw file write failed:", e, flush=True)
+
+    # 3) ML-friendly NDJSON dump (flatten payload)
+    ml_doc = {
+        "ts": doc["ts"].isoformat(),
+        "topic": doc["topic"],
+        "source": doc["source"],
+        "entity_id": doc["entity_id"],
+        "event_type": doc["event_type"],
+        **doc["payload"]  # flatten payload dict
+    }
+    try:
+        ml_file.write(json.dumps(ml_doc) + "\n")
+    except Exception as e:
+        print("ML file write failed:", e, flush=True)
 
 # --- MQTT ---
 mqtt_client = mqtt.Client()
@@ -111,7 +120,4 @@ mqtt_client.on_connect = on_connect
 mqtt_client.on_message = on_message
 
 mqtt_client.connect(MQTT_HOST, MQTT_PORT, 60)
-
-# Start timer + loop
-shutdown_timer()
 mqtt_client.loop_forever()
