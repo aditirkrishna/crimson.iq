@@ -79,26 +79,26 @@ crimson-iq/ <br>
 │ ├── events_ml.ndjson # Flattened ML dataset<br>
 │ └── mongo/ # MongoDB volume persistence<br>
 ├── gui/<br>
-│ ├── index.html # Frontend dashboard
-│ ├── nginx.conf # Webserver config
-│ └── Dockerfile
-├── collector/
-│ ├── main.py # Collector service
-│ ├── requirements.txt
-│ └── Dockerfile
-├── pod/
-│ ├── main.py # Pod simulator
-│ ├── requirements.txt
-│ └── Dockerfile
-├── hospital/
-│ ├── main.py # Hospital simulator
-│ ├── requirements.txt
-│ └── Dockerfile
-├── bloodbank/
-│ ├── main.py # Blood bank simulator
-│ ├── requirements.txt
-│ └── Dockerfile
-└── README.md
+│ ├── index.html # Frontend dashboard<br>
+│ ├── nginx.conf # Webserver config<br>
+│ └── Dockerfile<br>
+├── collector/<br>
+│ ├── main.py # Collector service<br>
+│ ├── requirements.txt<br>
+│ └── Dockerfile<br>
+├── pod/<br>
+│ ├── main.py # Pod simulator<br>
+│ ├── requirements.txt<br>
+│ └── Dockerfile<br>
+├── hospital/<br>
+│ ├── main.py # Hospital simulator<br>
+│ ├── requirements.txt<br>
+│ └── Dockerfile<br>
+├── bloodbank/<br>
+│ ├── main.py # Blood bank simulator<br>
+│ ├── requirements.txt<br>
+│ └── Dockerfile<br>
+└── README.md<br>
 
 
 ---
