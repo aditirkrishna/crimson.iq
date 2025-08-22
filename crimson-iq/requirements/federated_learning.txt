@@ -1,0 +1,7 @@
+flwr==1.5.0
+tensorflow-federated==0.24.0
+cryptography==41.0.8
+pycryptodome==3.19.0
+homomorphic-encryption==0.1.0
+syft==0.5.0
+tenseal==0.3.0

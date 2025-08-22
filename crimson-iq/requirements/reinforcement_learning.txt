@@ -1,0 +1,5 @@
+gymnasium==0.29.1
+stable-baselines3==2.1.0
+ray[rllib]==2.8.0
+optuna==3.4.0
+tensorboard==2.15.1
