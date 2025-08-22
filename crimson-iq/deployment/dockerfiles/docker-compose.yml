@@ -1,0 +1,136 @@
+version: '3.8'
+
+services:
+  # The central MQTT broker
+  mosquitto:
+    image: eclipse-mosquitto:2.0
+    container_name: mosquitto_broker
+    ports:
+      - "1883:1883"
+      - "9001:9001" # Expose the WebSocket port as well
+    volumes:
+      - ./conf/mosquitto.conf:/mosquitto/config/mosquitto.conf
+
+  # GUI/Dashboard
+  gui:
+    build: ./gui
+    container_name: gui_service
+    ports:
+      - "8080:8080"
+    depends_on:
+      - mosquitto
+
+  # Blood Banks
+  bloodbank1:
+    build: ./bloodbank
+    container_name: bloodbank_service_1
+    depends_on:
+      - mosquitto
+    environment:
+      - ID=1
+
+  bloodbank2:
+    build: ./bloodbank
+    container_name: bloodbank_service_2
+    depends_on:
+      - mosquitto
+    environment:
+      - ID=2
+
+  # Hospitals
+  hospital1:
+    build: ./hospital
+    container_name: hospital_service_1
+    depends_on:
+      - mosquitto
+    environment:
+      - ID=1
+
+  hospital2:
+    build: ./hospital
+    container_name: hospital_service_2
+    depends_on:
+      - mosquitto
+    environment:
+      - ID=2
+
+  # Pods (e.g., 6 of them)
+  pod1:
+    build: ./pod
+    container_name: pod_service_1
+    depends_on:
+      - mosquitto
+    environment:
+      - ID=1
+
+  pod2:
+    build: ./pod
+    container_name: pod_service_2
+    depends_on:
+      - mosquitto
+    environment:
+      - ID=2
+
+  pod3:
+    build: ./pod
+    container_name: pod_service_3
+    depends_on:
+      - mosquitto
+    environment:
+      - ID=3
+
+  pod4:
+    build: ./pod
+    container_name: pod_service_4
+    depends_on:
+      - mosquitto
+    environment:
+      - ID=4
+
+  pod5:
+    build: ./pod
+    container_name: pod_service_5
+    depends_on:
+      - mosquitto
+    environment:
+      - ID=5
+
+  pod6:
+    build: ./pod
+    container_name: pod_service_6
+    depends_on:
+      - mosquitto
+    environment:
+      - ID=6
+  
+  mongodb:
+    image: mongo:6
+    container_name: mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+      - ./data/exports:/export   # we'll drop JSON exports here
+
+  collector:
+    build: ./dockerfiles/collector
+    container_name: collector
+    depends_on:
+      - mosquitto
+      - mongodb
+    environment:
+      - ID=1
+      - RUNTIME_SECS=180 # 3 mins default
+      - MQTT_HOST=mosquitto
+      - MQTT_PORT=1883
+      - MQTT_TOPICS=#                 # all topics
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB=crimson
+      - MONGO_COLLECTION=events
+      - DUMP_NDJSON_PATH=/data/events.ndjson
+    volumes:
+      - ./data:/data                 # write the single dump file here
+
+volumes:
+  mongo_data:
