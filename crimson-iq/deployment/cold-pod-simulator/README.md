@@ -70,3 +70,89 @@ Benefits:
 ---
 
 ## 📂 Project Structure
+crimson-iq/
+├── docker-compose.yml # Orchestration config
+├── conf/
+│ └── mosquitto.conf # MQTT broker config
+├── data/ # All dataset exports
+│ ├── events_raw.ndjson # Mongo-style dump
+│ ├── events_ml.ndjson # Flattened ML dataset
+│ └── mongo/ # MongoDB volume persistence
+├── gui/
+│ ├── index.html # Frontend dashboard
+│ ├── nginx.conf # Webserver config
+│ └── Dockerfile
+├── collector/
+│ ├── main.py # Collector service
+│ ├── requirements.txt
+│ └── Dockerfile
+├── pod/
+│ ├── main.py # Pod simulator
+│ ├── requirements.txt
+│ └── Dockerfile
+├── hospital/
+│ ├── main.py # Hospital simulator
+│ ├── requirements.txt
+│ └── Dockerfile
+├── bloodbank/
+│ ├── main.py # Blood bank simulator
+│ ├── requirements.txt
+│ └── Dockerfile
+└── README.md
+
+
+---
+
+## 🚀 Running the System
+
+Make sure **Docker** & **Docker Compose** are installed.
+
+```bash
+# Clone the repository
+git clone https://github.com/your-username/crimson-iq.git
+cd crimson-iq
+
+# Start the simulation
+docker-compose up --build
+
+
+The system will spin up:
+
+Mosquitto broker (1883 for MQTT, 9001 for WebSockets)
+
+MongoDB database (27017)
+
+GUI at http://localhost:8080
+
+Collector and all publishers (pods, hospitals, bloodbanks)
+
+📊 Data Storage & Export
+
+MongoDB
+Events are stored with _id, ISODate, and raw payloads — ideal for queries, audits, and dashboards.
+
+NDJSON Dumps
+
+events_raw.ndjson → full Mongo-style records (audit trail).
+
+events_ml.ndjson → flattened & ML-ready (ISO timestamps, strings/numbers/booleans only).
+
+⚙️ Environment Variables (common)
+
+MQTT_HOST (default: mosquitto)
+
+MQTT_PORT (default: 1883)
+
+MQTT_TOPICS (collector; default: #)
+
+MONGO_URI (default: mongodb://mongodb:27017)
+
+MONGO_DB (default: crimson)
+
+MONGO_COLLECTION (default: events)
+
+DUMP_NDJSON_PATH (collector; default: /data/events_raw.ndjson)
+
+DUMP_ML_NDJSON_PATH (collector; default: /data/events_ml.ndjson)
+
+RUNTIME_SECS (shared duration for runs; e.g., 60, 120, etc.)
