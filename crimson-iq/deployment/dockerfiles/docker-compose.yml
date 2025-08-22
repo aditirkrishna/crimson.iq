@@ -121,7 +121,7 @@ services:
       - mongodb
     environment:
       - ID=1
-      - RUNTIME_SECS=180 # 3 mins default
+      - RUNTIME_SECS=60 # 3 mins default
       - MQTT_HOST=mosquitto
       - MQTT_PORT=1883
       - MQTT_TOPICS=#                 # all topics
