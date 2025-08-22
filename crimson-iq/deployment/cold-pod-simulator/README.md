@@ -70,15 +70,15 @@ Benefits:
 ---
 
 ## 📂 Project Structure
-crimson-iq/
-├── docker-compose.yml # Orchestration config
-├── conf/
-│ └── mosquitto.conf # MQTT broker config
-├── data/ # All dataset exports
-│ ├── events_raw.ndjson # Mongo-style dump
-│ ├── events_ml.ndjson # Flattened ML dataset
-│ └── mongo/ # MongoDB volume persistence
-├── gui/
+crimson-iq/ <br>
+├── docker-compose.yml # Orchestration config<br>
+├── conf/<br>
+│ └── mosquitto.conf # MQTT broker config<br>
+├── data/ # All dataset exports<br>
+│ ├── events_raw.ndjson # Mongo-style dump<br>
+│ ├── events_ml.ndjson # Flattened ML dataset<br>
+│ └── mongo/ # MongoDB volume persistence<br>
+├── gui/<br>
 │ ├── index.html # Frontend dashboard
 │ ├── nginx.conf # Webserver config
 │ └── Dockerfile
