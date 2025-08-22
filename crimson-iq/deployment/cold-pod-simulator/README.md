@@ -114,9 +114,9 @@ cd crimson-iq
 
 # Start the simulation
 docker-compose up --build
+```
 
-
-The system will spin up:
+### The system will spin up:
 
 Mosquitto broker (1883 for MQTT, 9001 for WebSockets)
 
@@ -124,10 +124,14 @@ MongoDB database (27017)
 
 GUI at http://localhost:8080
 
-Collector and all publishers (pods, hospitals, bloodbanks)
+Collector and all publishers (pods, hospitals, bloodbanks) data will be exported into two seperate files.
 
-📊 Data Storage & Export
+---
 
+
+## 📊 Data Storage & Export
+
+```bash
 MongoDB
 Events are stored with _id, ISODate, and raw payloads — ideal for queries, audits, and dashboards.
 
@@ -136,9 +140,12 @@ NDJSON Dumps
 events_raw.ndjson → full Mongo-style records (audit trail).
 
 events_ml.ndjson → flattened & ML-ready (ISO timestamps, strings/numbers/booleans only).
+```
 
-⚙️ Environment Variables (common)
+---
+## ⚙️ Environment Variables (common)
 
+```bash
 MQTT_HOST (default: mosquitto)
 
 MQTT_PORT (default: 1883)
@@ -156,3 +163,4 @@ DUMP_NDJSON_PATH (collector; default: /data/events_raw.ndjson)
 DUMP_ML_NDJSON_PATH (collector; default: /data/events_ml.ndjson)
 
 RUNTIME_SECS (shared duration for runs; e.g., 60, 120, etc.)
+```
